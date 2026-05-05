@@ -21,6 +21,10 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "API Reference",
       collapsed: false,
+      link: {
+        type: "generated-index",
+        slug: "/category/api-reference",
+      },
       items: [
         "api/serviceability",
         "api/orders",
