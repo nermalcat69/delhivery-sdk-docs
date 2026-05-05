@@ -1,0 +1,340 @@
+# Delhivery SDK — Full Reference
+
+> TypeScript SDK for the Delhivery B2C logistics API.
+> Package: `delhivery-sdk`
+> Repo: https://github.com/delhivery-sdk/delhivery-sdk
+> Docs: https://delhivery-sdk.pages.dev
+
+---
+
+## Installation
+
+```bash
+npm install delhivery-sdk
+# yarn add delhivery-sdk
+# pnpm add delhivery-sdk
+```
+
+Requires Node.js >= 18 (uses native `fetch`). Works in any environment with the Fetch API (Node 18+, Bun, Deno, Cloudflare Workers, browsers — though exposing tokens client-side is not recommended).
+
+---
+
+## Client Construction
+
+```typescript
+import { DelhiveryClient, STAGING_BASE_URL } from "delhivery-sdk";
+
+// Production
+const client = new DelhiveryClient({ token: "YOUR_API_TOKEN" });
+
+// Staging / sandbox
+const staging = new DelhiveryClient({
+  token: "YOUR_STAGING_TOKEN",
+  baseUrl: STAGING_BASE_URL, // "https://staging-express.delhivery.com"
+});
+
+// Custom timeout (default: 30 000 ms)
+const client2 = new DelhiveryClient({ token: "...", timeout: 60_000 });
+```
+
+Authentication header sent on every request: `Authorization: Token <token>`
+
+---
+
+## Serviceability — `client.serviceability`
+
+### check(params) → Promise<ServiceabilityResult[]>
+
+Check if a destination pincode is serviceable from an origin pincode.
+
+Params:
+- `origin_pin: string` — pickup pincode
+- `destination_pin: string` — delivery pincode
+- `payment_mode: "Prepaid" | "COD"` — payment mode
+- `weight: number` — weight in kg
+
+Result fields per item:
+- `cod: boolean` — COD available
+- `delivery: boolean` — delivery serviceable
+- `pickup: boolean` — pickup available
+- `destination_sensitive: boolean` — restricted zone
+- `origin_city: string`
+- `destination_city: string`
+
+```typescript
+const [s] = await client.serviceability.check({
+  origin_pin: "400001",
+  destination_pin: "560001",
+  payment_mode: "COD",
+  weight: 1.0,
+});
+if (!s?.cod) throw new Error("COD not available");
+```
+
+### expectedTAT(params) → Promise<TATResponse>
+
+Get expected delivery date (TAT) between two pincodes.
+
+Params: `origin_pin`, `destination_pin`, optional `payment_mode`
+
+Result: `{ estimated_date: string, origin: string, destination: string, tat?: number }`
+
+```typescript
+const tat = await client.serviceability.expectedTAT({
+  origin_pin: "400001",
+  destination_pin: "110001",
+});
+console.log(tat.estimated_date); // "2024-06-05"
+```
+
+---
+
+## Orders — `client.orders`
+
+### create(shipments) → Promise<CreateOrderResponse>
+
+Create one or more shipments (Prepaid, COD, or Pickup).
+
+Key shipment fields:
+- `client_order_id: string` — your unique order ID (required)
+- `order: string` — order date YYYY-MM-DD (required)
+- `pickup_location: string` — warehouse name, must exist in your account (required)
+- `payment_mode: "Prepaid" | "COD" | "Pickup"` (required)
+- `total_amount: number` — invoice value (required)
+- `weight: number` — kg (required)
+- `name`, `phone`, `add`, `city`, `state`, `pin`, `country` — delivery address (all required)
+- `cod_amount: number` — amount to collect; required when payment_mode = "COD"
+- `waybill?: string` — leave empty to auto-assign
+- `length?, breadth?, height?: number` — dimensions in cm
+- `invoice?: string`, `e_way_bill_no?: string`, `gst_tin?: string`
+- `shipment_items?: ShipmentItem[]` — line-item breakdown
+
+Response: `{ packages: [{ waybill, client_order_id, status: "Success"|"Error", remarks }] }`
+
+```typescript
+const res = await client.orders.create([{
+  client_order_id: "ORD-001",
+  order: "2024-06-01",
+  pickup_location: "Mumbai Warehouse",
+  payment_mode: "Prepaid",
+  total_amount: 999,
+  weight: 0.5,
+  name: "Rahul Sharma",
+  phone: "9876543210",
+  add: "123, MG Road",
+  city: "Bengaluru",
+  state: "Karnataka",
+  pin: "560001",
+  country: "India",
+}]);
+const waybill = res.packages[0]?.waybill;
+```
+
+### update(shipments) → Promise<CreateOrderResponse>
+
+Update fields on existing shipments. Pass only fields to change.
+
+Required: `waybill: string`. All other fields optional (`name`, `phone`, `add`, `city`, `state`, `pin`, `weight`, `payment_mode`, `cod_amount`, etc.)
+
+### cancel(waybills) → Promise<CancelOrderResponse[]>
+
+Cancel shipments by waybill. Only works before pickup.
+
+```typescript
+await client.orders.cancel(["WB001", "WB002"]);
+```
+
+### updateEWaybill(params) → Promise<EWaybillUpdateResponse>
+
+Attach/update GST e-waybill number.
+
+```typescript
+await client.orders.updateEWaybill({
+  waybill: "WB001",
+  e_way_bill_no: "EWB1234567890",
+});
+```
+
+---
+
+## Tracking — `client.tracking`
+
+### trackOne(waybill) → Promise<TrackingResponse>
+
+```typescript
+const data = await client.tracking.trackOne("WB001");
+const s = data.ShipmentData[0]?.Shipment;
+console.log(s?.Status, s?.["Delivery Date"]);
+```
+
+### trackMany(waybills) → Promise<TrackingResponse>
+
+Up to 10 waybills per call.
+
+```typescript
+const data = await client.tracking.trackMany(["WB001", "WB002"]);
+```
+
+### track(params) → Promise<TrackingResponse>
+
+Low-level. Accepts `waybill` (comma-separated) or `ref_ids` (your client order IDs, comma-separated).
+
+Shipment response fields include:
+`Status`, `Status DateTime`, `Origin City`, `Destination City`, `Pickup Date`, `Delivery Date`, `Expected Delivery Date`, `Customer Name`, `Customer Pin`, `Waybill`, `ReferenceNo`, `COD Amount`, `Scans[]`
+
+Each scan: `{ "SL Date", City, Location, "Scan Type", Scan, Instructions }`
+
+---
+
+## Shipping — `client.shipping`
+
+### calculateCost(params) → Promise<ShippingCostResponse>
+
+Estimate shipping charge between pincodes.
+
+Params: `origin_pin`, `destination_pin`, `payment_mode`, `weight`, optional `length/breadth/height`, `cod_amount`
+
+Result fields: `total_amount`, `freight_charge`, `cod_charge`, `fuel_surcharge`, `tax`, etc.
+
+### fetchWaybills(count) → Promise<WaybillFetchResponse>
+
+Pre-fetch waybill numbers (1–100 at a time).
+
+```typescript
+const { waybill_list } = await client.shipping.fetchWaybills(10);
+```
+
+### generateLabel(params) → Promise<ArrayBuffer>
+
+Generate shipping label PDF. `params.waybill` can be comma-separated for bulk labels.
+
+```typescript
+const pdf = await client.shipping.generateLabel({ waybill: "WB001" });
+import { writeFileSync } from "fs";
+writeFileSync("label.pdf", Buffer.from(pdf));
+```
+
+### schedulePickup(params) → Promise<PickupScheduleResponse>
+
+Schedule a courier pickup.
+
+Params: `pickup_date` (YYYY-MM-DD), `expected_package_quantity`, optional `client_warehouse_code`, `waybill_list`
+
+---
+
+## Warehouses — `client.warehouses`
+
+The `pickup_location` in order creation must match an existing warehouse `name`.
+
+### create(params) → Promise<WarehouseResponse>
+
+Required: `name`, `address`, `city`, `state`, `country`, `pin`, `phone`
+Optional: `address2`, `email`, `return_address`, `return_city`, `return_pin`, `gst_no`
+
+### update(params) → Promise<WarehouseResponse>
+
+Required: `name`. All other fields optional.
+
+---
+
+## NDR — `client.ndr`
+
+### update(params) → Promise<NDRUpdateResponse>
+
+Handle a Non-Delivery Report.
+
+Params:
+- `waybill: string` (required)
+- `action: "re-attempt" | "return" | "confirm" | "address-update" | "phone-update" | "reschedule"` (required)
+- `reattempt_date?: string` — YYYY-MM-DD, for re-attempt/reschedule
+- `updated_address?: string` — for address-update
+- `updated_contact?: string` — for phone-update
+- `seller_note?: string`
+
+### rvpQC(params) → Promise<RVPQCResponse>
+
+QC for reverse pickup. Params: `waybill`, `qc_status: "Pass"|"Fail"`, `otp?`, `remarks?`
+
+---
+
+## Documents — `client.documents`
+
+### download(params) → Promise<ArrayBuffer>
+
+Download a document PDF.
+
+Params:
+- `waybill: string`
+- `type: "label" | "invoice" | "manifest" | "pod"`
+
+```typescript
+const pdf = await client.documents.download({ waybill: "WB001", type: "pod" });
+```
+
+---
+
+## Webhooks
+
+Register your endpoint in the Delhivery One portal. Delhivery POSTs JSON on every scan event.
+
+Payload type: `WebhookEvent` (exported from the package)
+
+Fields: `waybill`, `status`, `"Status DateTime"`, `City`, `"Scan Type"`, `Scan`, `ReferenceNo?`, `Instructions?`
+
+Common status values: `Manifested`, `In Transit`, `Out for Delivery`, `Delivered`, `NDR`, `RTO Initiated`, `RTO Delivered`, `Lost`
+
+```typescript
+import type { WebhookEvent } from "delhivery-sdk";
+
+app.post("/webhooks/delhivery", (req, res) => {
+  res.sendStatus(200); // always respond quickly
+  const events: WebhookEvent[] = Array.isArray(req.body) ? req.body : [req.body];
+  for (const e of events) {
+    if (e.status === "Delivered") markDelivered(e.waybill);
+  }
+});
+```
+
+---
+
+## Error Handling
+
+All errors are exported from `delhivery-sdk`:
+
+| Class | Condition |
+|---|---|
+| `DelhiveryError` | Generic API error — has `.statusCode: number` and `.raw: unknown` |
+| `DelhiveryAuthError` | 401/403 — bad or expired token |
+| `DelhiveryRateLimitError` | 429 — slow down |
+| `DelhiveryNetworkError` | Network/timeout failure — has `.cause` |
+
+```typescript
+import { DelhiveryAuthError, DelhiveryNetworkError, DelhiveryError } from "delhivery-sdk";
+
+try {
+  await client.tracking.trackOne("WB001");
+} catch (err) {
+  if (err instanceof DelhiveryAuthError) { /* bad token */ }
+  else if (err instanceof DelhiveryNetworkError) { /* network down */ }
+  else if (err instanceof DelhiveryError) {
+    console.log(err.statusCode, err.raw);
+  }
+}
+```
+
+---
+
+## Full type exports
+
+All TypeScript types are exported from the package root:
+
+`DelhiveryClientOptions`, `PaymentMode`, `ProductType`, `Address`,
+`PincodeServiceabilityParams`, `ServiceabilityResult`, `TATParams`, `TATResponse`,
+`Shipment`, `ShipmentItem`, `CreateOrderResponse`, `CreateOrderShipmentResult`,
+`UpdateShipment`, `CancelOrderResponse`, `EWaybillUpdateParams`, `EWaybillUpdateResponse`,
+`TrackingParams`, `TrackingResponse`, `TrackingScan`, `TrackingShipment`,
+`CreateWarehouseParams`, `UpdateWarehouseParams`, `WarehouseResponse`,
+`ShippingCostParams`, `ShippingCostResponse`, `WaybillFetchResponse`,
+`LabelGenerateParams`, `PickupScheduleParams`, `PickupScheduleResponse`,
+`NDRAction`, `NDRUpdateParams`, `NDRUpdateResponse`,
+`RVPQCParams`, `RVPQCResponse`, `WebhookEvent`

@@ -1,0 +1,22 @@
+# Docusaurus hashes all JS/CSS filenames — cache them forever
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# HTML and service workers — always revalidate
+/*.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+# Static files that don't get hashed
+/img/*
+  Cache-Control: public, max-age=86400
+
+/llms.txt
+  Cache-Control: public, max-age=3600
+  Content-Type: text/plain; charset=utf-8
+
+/llms-full.txt
+  Cache-Control: public, max-age=3600
+  Content-Type: text/plain; charset=utf-8
